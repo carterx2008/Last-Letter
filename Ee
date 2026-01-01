@@ -30,7 +30,7 @@ local MODES = {
     {Name = "Community Project (Group Member)", Key = "project_contribute", Placeholder = "Group ID only...", Type = "Group"},
     {Name = "Supporting Asset (Favourite)", Key = "content_asset_support", Placeholder = "Asset ID only...", Type = "Asset"},
     {Name = "Supporting Bundle (Favourite)", Key = "content_bundle_support", Placeholder = "Bundle ID only...", Type = "Bundle"},
-    {Name = "Supporting Game (Favourite)", Key = "game_favorite", Placeholder = "Place ID only...", Type = "Asset"} -- Games usually validated as Assets/Places
+    {Name = "Supporting Game (Favourite)", Key = "game_favorite", Placeholder = "Place ID only...", Type = "Asset"}
 }
 
 local TABS = {
@@ -40,14 +40,98 @@ local TABS = {
 }
 
 -- --- BIẾN TRẠNG THÁI ---
-_G.NewMainFarmActive = false 
-_G.MultipleDmgActive = false 
 _G.HitboxSize = 8 
-_G.DmgMultiplier = 1 
-
 local guiVisible = true 
 local hidePlayerConnections = {}
 local hideCharConnections = {}
+
+-- ==========================================================
+-- --- LOGIC HITBOX HIỆN ĐẠI (MODERN HITBOX) ---
+-- ==========================================================
+local HitboxSystem = {}
+HitboxSystem.Connection = nil
+HitboxSystem.OriginalSizes = {} -- Lưu kích thước gốc để restore
+
+function HitboxSystem.Enable()
+    if HitboxSystem.Connection then HitboxSystem.Connection:Disconnect() end
+    
+    HitboxSystem.Connection = RunService.Heartbeat:Connect(function()
+        local size = _G.HitboxSize or 8
+        local targets = {}
+        
+        -- Lấy tool từ Character
+        if LocalPlayer.Character then
+            for _, v in pairs(LocalPlayer.Character:GetChildren()) do
+                if v:IsA("Tool") then table.insert(targets, v) end
+            end
+        end
+        -- Lấy tool từ Backpack
+        if LocalPlayer.Backpack then
+            for _, v in pairs(LocalPlayer.Backpack:GetChildren()) do
+                if v:IsA("Tool") then table.insert(targets, v) end
+            end
+        end
+
+        for _, tool in pairs(targets) do
+            local handle = tool:FindFirstChild("Handle")
+            if handle and handle:IsA("BasePart") then
+                -- 1. Lưu size gốc nếu chưa lưu
+                if not HitboxSystem.OriginalSizes[handle] then
+                    HitboxSystem.OriginalSizes[handle] = handle.Size
+                end
+
+                -- 2. Thay đổi thuộc tính (Hitbox logic)
+                handle.Massless = true
+                handle.CanCollide = false
+                handle.Size = Vector3.new(size, size, size)
+                handle.Transparency = 0.6 
+
+                -- 3. Tạo Visual (Hộp đỏ)
+                if not handle:FindFirstChild("HitboxVisual") then
+                    local box = Instance.new("SelectionBox")
+                    box.Name = "HitboxVisual"
+                    box.Adornee = handle
+                    box.Color3 = COLOR_RED
+                    box.LineThickness = 0.05
+                    box.Transparency = 0.6
+                    box.Parent = handle
+                else
+                    -- Cập nhật màu/thuộc tính liên tục phòng trường hợp game reset
+                    handle.HitboxVisual.Color3 = COLOR_RED
+                end
+            end
+        end
+    end)
+end
+
+function HitboxSystem.Disable()
+    -- Ngắt kết nối loop
+    if HitboxSystem.Connection then
+        HitboxSystem.Connection:Disconnect()
+        HitboxSystem.Connection = nil
+    end
+
+    -- Khôi phục kích thước gốc (Restore)
+    for handle, originalSize in pairs(HitboxSystem.OriginalSizes) do
+        if handle and handle.Parent then -- Kiểm tra handle còn tồn tại không
+            handle.Size = originalSize
+            handle.Transparency = 0 -- Reset trong suốt (tùy game, thường là 0)
+            
+            local vis = handle:FindFirstChild("HitboxVisual")
+            if vis then vis:Destroy() end
+        end
+    end
+    
+    -- Xóa dữ liệu cũ
+    HitboxSystem.OriginalSizes = {}
+end
+
+-- Tự động tắt Hitbox khi nhân vật chết để tránh lỗi lưu size
+LocalPlayer.CharacterAdded:Connect(function()
+    if HitboxSystem.Connection then -- Nếu đang bật thì reset biến lưu, giữ kết nối
+        HitboxSystem.OriginalSizes = {}
+    end
+end)
 
 -- ==========================================================
 -- --- LOGIC XÓA SOCIALMASTERUI TỨC THÌ ---
@@ -77,97 +161,8 @@ task.spawn(function()
     end)
 end)
 
--- --- EMBEDDED SCRIPTS (SWORD HITBOX & DAMAGE) ---
-local newMainFarmScript = [[
-    local Players = game:GetService("Players")
-    local player = Players.LocalPlayer
-    
-    local function expandHitbox(tool)
-        if not _G.NewMainFarmActive then return end
-        local currentSize = _G.HitboxSize or 8
-        
-        if tool:IsA("Tool") and tool:FindFirstChild("Handle") then
-            local h = tool.Handle
-            h.Massless = true
-            h.CanCollide = false
-            h.Transparency = 0.6 
-            h.Size = Vector3.new(currentSize, currentSize, currentSize)
-            
-            if not h:FindFirstChild("HitboxVisual") then
-                local box = Instance.new("SelectionBox")
-                box.Name = "HitboxVisual"
-                box.Adornee = h
-                box.Color3 = Color3.fromRGB(255, 80, 80)
-                box.LineThickness = 0.05
-                box.Transparency = 0.5
-                box.Parent = h
-            else
-                h.HitboxVisual.Color3 = Color3.fromRGB(255, 80, 80)
-            end
-        end
-    end
-
-    task.spawn(function()
-        while _G.NewMainFarmActive do
-            if player.Character then
-                for _, child in ipairs(player.Character:GetChildren()) do
-                    if child:IsA("Tool") then
-                        expandHitbox(child)
-                    end
-                end
-            end
-            for _, child in ipairs(player.Backpack:GetChildren()) do
-                if child:IsA("Tool") then
-                    expandHitbox(child)
-                end
-            end
-            task.wait(0.5)
-        end
-    end)
-]]
-
--- Logic Multiple Damage (ĐÃ FIX GIẬT)
-local function runMultipleDmgLoop()
-    task.spawn(function()
-        while _G.MultipleDmgActive do
-            local char = LocalPlayer.Character
-            if char then
-                local tool = char:FindFirstChildOfClass("Tool")
-                if tool then
-                    local handle = tool:FindFirstChild("Handle")
-                    if handle then
-                        -- [FIX QUAN TRỌNG]: Tắt va chạm và khối lượng để không bị physics đẩy ngược lại
-                        handle.Massless = true
-                        handle.CanCollide = false
-                        
-                        for _, v in pairs(game.Players:GetPlayers()) do
-                            if v ~= LocalPlayer and v.Character and v.Character:FindFirstChild("HumanoidRootPart") and v.Character:FindFirstChild("Humanoid") then
-                                local hrp = v.Character.HumanoidRootPart
-                                local hum = v.Character.Humanoid
-                                
-                                -- Kiểm tra khoảng cách và máu
-                                if (hrp.Position - handle.Position).Magnitude <= (_G.HitboxSize or 8) and hum.Health > 0 then
-                                    -- Dùng coroutine wrap để việc spam damage không làm khựng luồng chính
-                                    coroutine.wrap(function()
-                                        for i = 1, _G.DmgMultiplier do
-                                            if not _G.MultipleDmgActive then break end
-                                            firetouchinterest(handle, hrp, 0) -- Chạm
-                                            firetouchinterest(handle, hrp, 1) -- Ngắt chạm
-                                        end
-                                    end)()
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-            task.wait(0.1) -- Tốc độ lặp
-        end
-    end)
-end
-
 -- --- HỆ THỐNG LƯU SETTINGS ---
-local SaveFileName = "PanelAutoControl_v23_Settings.json"
+local SaveFileName = "PanelAutoControl_v24_Settings_Lite.json" 
 
 local function getDefaultSettings()
     return {
@@ -175,10 +170,8 @@ local function getDefaultSettings()
         lastInput = "",
         lastModeKey = "user_social",
         autoActivate = false,
-        mainFarmEnabled = false,
-        multipleDmgEnabled = false,
+        mainFarmEnabled = false, -- Tên biến cũ, giờ dùng cho Hitbox
         hitboxSize = 8,
-        dmgMultiplier = 1,
         hidePlayersEnabled = false,
         toggleKey = Enum.KeyCode.F1.Name
     }
@@ -221,20 +214,12 @@ end
 
 -- Load Variables
 local mainFarmEnabled = savedSettings.mainFarmEnabled or false
-local multipleDmgEnabled = savedSettings.multipleDmgEnabled or false
 local antiRejoinEnabled = savedSettings.antiRejoinEnabled or false
 local hidePlayersEnabled = savedSettings.hidePlayersEnabled or false
-
-_G.NewMainFarmActive = mainFarmEnabled
-_G.MultipleDmgActive = multipleDmgEnabled
 
 local loadedSize = tonumber(savedSettings.hitboxSize) or 8
 if loadedSize > 50 then loadedSize = 50 end
 _G.HitboxSize = loadedSize
-
-local loadedDmg = tonumber(savedSettings.dmgMultiplier) or 1
-if loadedDmg > 20 then loadedDmg = 20 end
-_G.DmgMultiplier = loadedDmg
 
 -- --- CLEANUP GUI CŨ ---
 pcall(function()
@@ -288,7 +273,7 @@ local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1, -30, 1, 0)
 titleLabel.Position = UDim2.new(0, 12, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "Panel Auto Control | Version 1.6.4" 
+titleLabel.Text = "Panel Auto Control | Version 1.7 (Modern)" 
 titleLabel.TextSize = 14
 local titleFont = Enum.Font.GothamBold
 titleLabel.Font = titleFont
@@ -305,7 +290,10 @@ closeButton.TextSize = 18
 closeButton.Font = titleFont
 closeButton.TextColor3 = Color3.fromRGB(180, 180, 200)
 closeButton.Parent = headerFrame
-closeButton.MouseButton1Click:Connect(function() screenGui:Destroy() end)
+closeButton.MouseButton1Click:Connect(function() 
+    HitboxSystem.Disable()
+    screenGui:Destroy() 
+end)
 
 local contentWrapper = Instance.new("Frame")
 contentWrapper.Size = UDim2.new(1, -24, 1, -47)
@@ -598,7 +586,7 @@ local function processActivation(inputText)
                 end
             end
         else
-            -- Các mode yêu cầu ID số (Group, Asset, Game, Bundle)
+            -- Các mode (Group, Asset, Game, Bundle)
             if not isNumeric then
                 statusLabel.Text = "Error: Mode requires Numeric ID." statusLabel.TextColor3 = COLOR_RED return
             end
@@ -628,17 +616,21 @@ local pvpLayout = Instance.new("UIListLayout") pvpLayout.Padding = UDim.new(0, 5
 local killFarmLabel = Instance.new("TextLabel") killFarmLabel.Size = UDim2.new(1, 0, 0, 14) killFarmLabel.BackgroundTransparency = 1 killFarmLabel.TextSize = 9 killFarmLabel.Font = Enum.Font.GothamBold killFarmLabel.TextColor3 = COLOR_ENABLED killFarmLabel.TextXAlignment = Enum.TextXAlignment.Left killFarmLabel.LayoutOrder = 1 killFarmLabel.Parent = pvpPanel
 trySetRichText(killFarmLabel, string.format("PVP Enhancement <font color=\"rgb(255, 80, 80)\">(RISKY!!)</font>"), true)
 
--- Functions for Main Farm
-local function runNewMainFarm() _G.NewMainFarmActive = true pcall(function() loadstring(newMainFarmScript)() end) end
-local function stopNewMainFarm() _G.NewMainFarmActive = false end
-
 -- [1] Enable Sword Hitbox Toggle
-local mainFarmFrame, mainFarmToggle, mainFarmDot = createToggleButton("MainFarm", "Enable Sword Hitbox", mainFarmEnabled, "mainFarmEnabled", pvpPanel) mainFarmFrame.LayoutOrder = 2
-if mainFarmEnabled then runNewMainFarm() end
+local mainFarmFrame, mainFarmToggle, mainFarmDot = createToggleButton("MainFarm", "Enable Sword Hitbox (Modern)", mainFarmEnabled, "mainFarmEnabled", pvpPanel) mainFarmFrame.LayoutOrder = 2
+
+-- Kích hoạt ngay nếu đã bật từ trước
+if mainFarmEnabled then HitboxSystem.Enable() end
+
 mainFarmToggle.MouseButton1Click:Connect(function()
     local previousState = mainFarmEnabled
     mainFarmEnabled = toggleUIAndSave(mainFarmEnabled, mainFarmToggle, mainFarmDot, "mainFarmEnabled")
-    if mainFarmEnabled and not previousState then runNewMainFarm() elseif not mainFarmEnabled and previousState then stopNewMainFarm() end
+    
+    if mainFarmEnabled and not previousState then 
+        HitboxSystem.Enable() 
+    elseif not mainFarmEnabled and previousState then 
+        HitboxSystem.Disable() 
+    end
 end)
 
 -- [2] Hitbox Size Slider
@@ -674,52 +666,6 @@ sliderBg.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserI
 UserInputService.InputEnded:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then if isDraggingSlider then isDraggingSlider = false savedSettings.hitboxSize = _G.HitboxSize saveSettings(savedSettings) end end end)
 UserInputService.InputChanged:Connect(function(input) if isDraggingSlider and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then updateSliderFromInput(input) end end)
 
--- [3] Enable Multiple Damage Toggle
-local dmgFrame, dmgToggle, dmgDot = createToggleButton("MultipleDmg", "Enable Multiple Damage", multipleDmgEnabled, "multipleDmgEnabled", pvpPanel) 
-dmgFrame.LayoutOrder = 4
-if multipleDmgEnabled then runMultipleDmgLoop() end
-
-dmgToggle.MouseButton1Click:Connect(function()
-    local previousState = multipleDmgEnabled
-    multipleDmgEnabled = toggleUIAndSave(multipleDmgEnabled, dmgToggle, dmgDot, "multipleDmgEnabled")
-    _G.MultipleDmgActive = multipleDmgEnabled
-    if multipleDmgEnabled and not previousState then runMultipleDmgLoop() end
-end)
-
--- [4] Damage Multiplier Slider
-local dmgSliderContainer = Instance.new("Frame") dmgSliderContainer.Name = "DmgSliderContainer" dmgSliderContainer.Size = UDim2.new(1, -10, 0, 40) dmgSliderContainer.BackgroundColor3 = COLOR_BACKGROUND_DARK dmgSliderContainer.LayoutOrder = 5 dmgSliderContainer.Parent = pvpPanel
-local dmgSliderCorner = Instance.new("UICorner") dmgSliderCorner.Parent = dmgSliderContainer
-local dmgSliderLabel = Instance.new("TextLabel") dmgSliderLabel.Size = UDim2.new(1, -20, 0, 15) dmgSliderLabel.Position = UDim2.new(0, 10, 0, 5) dmgSliderLabel.BackgroundTransparency = 1 dmgSliderLabel.Text = "Damage Amount: " .. tostring(_G.DmgMultiplier) dmgSliderLabel.TextColor3 = COLOR_TEXT_WHITE dmgSliderLabel.TextXAlignment = Enum.TextXAlignment.Left dmgSliderLabel.Font = Enum.Font.GothamBold dmgSliderLabel.TextSize = 11 dmgSliderLabel.Parent = dmgSliderContainer
-local dmgSliderBg = Instance.new("Frame") dmgSliderBg.Name = "DmgSliderBg" dmgSliderBg.Size = UDim2.new(1, -30, 0, 4) dmgSliderBg.Position = UDim2.new(0, 15, 0, 28) dmgSliderBg.BackgroundColor3 = Color3.fromRGB(40, 40, 60) dmgSliderBg.BorderSizePixel = 0 dmgSliderBg.Parent = dmgSliderContainer
-local dmgSliderBgCorner = Instance.new("UICorner") dmgSliderBgCorner.CornerRadius = UDim.new(1, 0) dmgSliderBgCorner.Parent = dmgSliderBg
-local dmgSliderFill = Instance.new("Frame") dmgSliderFill.Name = "DmgSliderFill" dmgSliderFill.Size = UDim2.new(0, 0, 1, 0) dmgSliderFill.BackgroundColor3 = COLOR_ENABLED dmgSliderFill.BorderSizePixel = 0 dmgSliderFill.Parent = dmgSliderBg
-local dmgSliderFillCorner = Instance.new("UICorner") dmgSliderFillCorner.CornerRadius = UDim.new(1, 0) dmgSliderFillCorner.Parent = dmgSliderFill
-local dmgSliderBtn = Instance.new("TextButton") dmgSliderBtn.Name = "DmgSliderBtn" dmgSliderBtn.Size = UDim2.new(0, 14, 0, 14) dmgSliderBtn.Position = UDim2.new(0, 0, 0.5, -7) dmgSliderBtn.BackgroundColor3 = COLOR_TEXT_WHITE dmgSliderBtn.BorderSizePixel = 0 dmgSliderBtn.Text = "" dmgSliderBtn.AutoButtonColor = false dmgSliderBtn.Parent = dmgSliderBg
-local dmgSliderBtnCorner = Instance.new("UICorner") dmgSliderBtnCorner.CornerRadius = UDim.new(1, 0) dmgSliderBtnCorner.Parent = dmgSliderBtn
-
-local minDmg, maxDmg, isDraggingDmg = 1, 20, false 
-local function updateDmgSliderVisual(val)
-    local percent = (val - minDmg) / (maxDmg - minDmg)
-    if percent < 0 then percent = 0 end if percent > 1 then percent = 1 end
-    dmgSliderFill.Size = UDim2.new(percent, 0, 1, 0) dmgSliderBtn.Position = UDim2.new(percent, -7, 0.5, -7) dmgSliderLabel.Text = "Damage Amount: " .. tostring(math.floor(val))
-end
-updateDmgSliderVisual(_G.DmgMultiplier)
-local function updateDmgSliderFromInput(input)
-    local sliderX = dmgSliderBg.AbsolutePosition.X
-    local sliderWidth = dmgSliderBg.AbsoluteSize.X
-    local mouseX = input.Position.X
-    local percent = (mouseX - sliderX) / sliderWidth
-    if percent < 0 then percent = 0 end if percent > 1 then percent = 1 end
-    local newValue = math.floor(minDmg + (maxDmg - minDmg) * percent)
-    _G.DmgMultiplier = newValue
-    updateDmgSliderVisual(newValue)
-end
-dmgSliderBtn.MouseButton1Down:Connect(function() isDraggingDmg = true end)
-dmgSliderBg.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then isDraggingDmg = true updateDmgSliderFromInput(input) end end)
-UserInputService.InputEnded:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then if isDraggingDmg then isDraggingDmg = false savedSettings.dmgMultiplier = _G.DmgMultiplier saveSettings(savedSettings) end end end)
-UserInputService.InputChanged:Connect(function(input) if isDraggingDmg and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then updateDmgSliderFromInput(input) end end)
-
-
 -- ==================== SETTINGS TAB ====================
 local settingsLayout = Instance.new("UIListLayout") settingsLayout.Padding = UDim.new(0, 5) settingsLayout.SortOrder = Enum.SortOrder.LayoutOrder settingsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left settingsLayout.Parent = settingsPanel
 local keybindLabel = Instance.new("TextLabel") keybindLabel.Size = UDim2.new(1, 0, 0, 14) keybindLabel.BackgroundTransparency = 1 keybindLabel.Text = "GUI Configuration" keybindLabel.TextSize = 9 keybindLabel.Font = Enum.Font.GothamBold keybindLabel.TextColor3 = COLOR_ENABLED keybindLabel.TextXAlignment = Enum.TextXAlignment.Left keybindLabel.LayoutOrder = 1 keybindLabel.Parent = settingsPanel
@@ -744,25 +690,22 @@ resetFrame.MouseButton1Click:Connect(function()
     TweenService:Create(resetFrame, TweenInfo.new(0.1), {BackgroundColor3 = Color3.fromRGB(50, 50, 70)}):Play() task.wait(0.1)
     TweenService:Create(resetFrame, TweenInfo.new(0.1), {BackgroundColor3 = COLOR_BACKGROUND_DARK}):Play()
     local defaultSettings = getDefaultSettings()
-    stopNewMainFarm()
-    _G.MultipleDmgActive = false
-    mainFarmEnabled, multipleDmgEnabled, antiRejoinEnabled, hidePlayersEnabled = defaultSettings.mainFarmEnabled, defaultSettings.multipleDmgEnabled, defaultSettings.antiRejoinEnabled, defaultSettings.hidePlayersEnabled
+    
+    HitboxSystem.Disable()
+    mainFarmEnabled, antiRejoinEnabled, hidePlayersEnabled = defaultSettings.mainFarmEnabled, defaultSettings.antiRejoinEnabled, defaultSettings.hidePlayersEnabled
     _G.HitboxSize = defaultSettings.hitboxSize
-    _G.DmgMultiplier = defaultSettings.dmgMultiplier
     savedSettings = defaultSettings
     saveSettings(savedSettings)
     if inputBox then inputBox.Text = defaultSettings.lastInput end
     keyButton.Text = formatKeyName(defaultSettings.toggleKey) keyButton.TextColor3 = COLOR_ENABLED keyButton.BackgroundColor3 = COLOR_TAB_INACTIVE
     antiRejoinEnabled = toggleUIAndSave(true, antiRejoinToggle, antiRejoinDot, "antiRejoinEnabled", false)
     mainFarmEnabled = toggleUIAndSave(true, mainFarmToggle, mainFarmDot, "mainFarmEnabled", false)
-    multipleDmgEnabled = toggleUIAndSave(true, dmgToggle, dmgDot, "multipleDmgEnabled", false)
     updateSliderVisual(defaultSettings.hitboxSize)
-    updateDmgSliderVisual(defaultSettings.dmgMultiplier)
     if hideToggle and hideDot then hidePlayersEnabled = toggleUIAndSave(true, hideToggle, hideDot, "hidePlayersEnabled", false) for _, conn in pairs(hidePlayerConnections) do conn:Disconnect() end for _, conn in pairs(hideCharConnections) do conn:Disconnect() end hidePlayerConnections = {} hideCharConnections = {} end
     statusLabel.Text = "All settings reset to default." statusLabel.TextColor3 = COLOR_RED
 end)
 
--- --- [FIXED] HIDE PLAYERS & EFFECTS LOGIC ---
+-- --- HIDE PLAYERS & EFFECTS LOGIC ---
 local function hidePart(part) if part:IsA("BasePart") then part.Transparency = 1 part.LocalTransparencyModifier = 1 part.CastShadow = false part.CanCollide = false end end
 
 local function hideChar(char)

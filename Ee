@@ -36,7 +36,11 @@ local AutoEquipEnabled, LastEquippedWeapon = false, nil
 local WeaponRanks = {"Steel", "Obsidian", "Thunder", "Sakura", "Frostbite", "Astra", "Hydra", "Gaia", "Pheonix", "Draco", "Aether", "Terraprisma"}
 local TargetPlayerCount = 5
 local AntiFlingEnabled, lastSafePos = false, nil
+local NoclipEnabled = false
 local GameRemoteFunction = ReplicatedStorage:WaitForChild("Events"):WaitForChild("GameRemoteFunction")
+
+local WeaponCache = {}
+local WeaponCachePopulated = false
 
 local function isAlive(player)
     local char = player.Character
@@ -123,17 +127,25 @@ local function ApplyFastSlashConfig()
     local c_speed = FastSlashEnabled and SlashSpeedValue or 0.65
     local c_slowMult = FastSlashEnabled and 1 or 0.2
     local c_slowTime = FastSlashEnabled and 0 or 1.5
+    
     pcall(function()
-        for _, v in pairs(getgc(true)) do
-            if type(v) == "table" and rawget(v, "attackOrder") and rawget(v, "attackCycle") then
-                local cycle = rawget(v, "attackCycle")
-                if type(cycle) == "table" then
-                    for key, data in pairs(cycle) do
-                        if type(data) == "table" then
-                            data.attackTime = c_speed
-                            data.slowMult = c_slowMult
-                            data.slowTime = c_slowTime
-                        end
+        if not WeaponCachePopulated then
+            for _, v in pairs(getgc(true)) do
+                if type(v) == "table" and rawget(v, "attackOrder") and rawget(v, "attackCycle") then
+                    table.insert(WeaponCache, v)
+                end
+            end
+            WeaponCachePopulated = true
+        end
+
+        for _, v in ipairs(WeaponCache) do
+            local cycle = rawget(v, "attackCycle")
+            if type(cycle) == "table" then
+                for key, data in pairs(cycle) do
+                    if type(data) == "table" then
+                        data.attackTime = c_speed
+                        data.slowMult = c_slowMult
+                        data.slowTime = c_slowTime
                     end
                 end
             end
@@ -298,6 +310,8 @@ end
 
 local MainTab = Window:CreateTab("Main", "home")
 
+MainTab:CreateSection("ESP & Visuals")
+
 MainTab:CreateToggle({
     Name = "Show All Players", CurrentValue = false, Flag = "ShowAllPlayerToggle",
     Callback = function(Value)
@@ -437,11 +451,15 @@ MainTab:CreateButton({
 })
 
 local WeaponsTab = Window:CreateTab("Weapons", "sword")
+
+WeaponsTab:CreateSection("Weapon Automation")
+
 WeaponsTab:CreateToggle({ Name = "Auto Open Chest", CurrentValue = false, Flag = "AutoChest", Callback = function(Value) AutoChestEnabled = Value end})
 WeaponsTab:CreateDropdown({ Name = "Select Chest Type", Options = {"Basic", "Divine"}, CurrentOption = {"Basic"}, MultipleOptions = false, Flag = "ChestType", Callback = function(Option) SelectedChest = Option[1] end})
 WeaponsTab:CreateToggle({ Name = "Auto Equip Best Weapon", CurrentValue = false, Flag = "AutoEquipBest", Callback = function(Value) AutoEquipEnabled = Value end})
 
 local CharacterTab = Window:CreateTab("Character", "user")
+
 CharacterTab:CreateSection("Movement")
 
 local WalkSpeedEnabled, WalkSpeedValue = false, 16
@@ -458,6 +476,22 @@ CharacterTab:CreateSlider({ Name = "WalkSpeed Amount", Range = {16, 50}, Increme
 
 local InfJumpEnabled = false
 CharacterTab:CreateToggle({ Name = "Infinite Jump", CurrentValue = false, Flag = "InfJumpToggle", Callback = function(Value) InfJumpEnabled = Value end})
+
+CharacterTab:CreateToggle({ 
+    Name = "Noclip", CurrentValue = false, Flag = "NoclipToggle", 
+    Callback = function(Value) 
+        NoclipEnabled = Value 
+        if not Value and LocalPlayer.Character then
+            local partsToCollide = {"Torso", "UpperTorso", "LowerTorso", "Head"}
+            for _, partName in ipairs(partsToCollide) do
+                local part = LocalPlayer.Character:FindFirstChild(partName)
+                if part then part.CanCollide = true end
+            end
+        end
+    end
+})
+
+CharacterTab:CreateSection("Protect yourself")
 CharacterTab:CreateToggle({ Name = "Anti-Fling", CurrentValue = false, Flag = "AntiFlingToggle", Callback = function(Value) AntiFlingEnabled = Value end})
 
 CharacterTab:CreateSection("Server")
@@ -480,6 +514,14 @@ CharacterTab:CreateSlider({ Name = "Limit Configuration", Range = {1, 7}, Increm
 CharacterTab:CreateInput({ Name = "Join Jobid", PlaceholderText = "Paste Jobid Here...", RemoveTextAfterFocusLost = false, Callback = function(Text) if Text and Text ~= "" then pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, Text, LocalPlayer) end) end end })
 
 RunService.Stepped:Connect(function()
+    if NoclipEnabled and LocalPlayer.Character then
+        for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
+            if part:IsA("BasePart") and part.CanCollide then
+                part.CanCollide = false
+            end
+        end
+    end
+    
     if AntiFlingEnabled then
         for _, player in ipairs(Players:GetPlayers()) do
             if player ~= LocalPlayer and player.Character then
@@ -516,7 +558,7 @@ end)
 
 task.spawn(function()
     local wasInLobby = true
-    while task.wait(0.1) do 
+    while task.wait() do 
         pcall(function()
             if not isAlive(LocalPlayer) then wasInLobby = true; return end
             if AutoAttackAllEnabled then
